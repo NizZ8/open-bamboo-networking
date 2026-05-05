@@ -684,6 +684,99 @@ Terminology note:
 
 - ABI names still use `OSS` in several places (`bambu_network_get_oss_config`, `...UPLOAD_3MF_TO_OSS...` error codes), but the observed cloud print upload transport in this implementation is presigned object-storage `PUT` URLs (S3-style semantics in code/comments), not a plugin-side fixed OSS endpoint.
 
+#### 6.8.2. The MQTT `project_file` command (wire format)
+
+The print-job submission ends with a single MQTT command published to the printer's request channel (`device/<dev_id>/request` on LAN, identical envelope on the cloud forwarder). The frame the firmware actually parses lives under the `print` object. The example below was captured on a real P2S running stock firmware paired with the stock Studio + plugin; X1 / P1S share the schema with a few extra optional members.
+
+```json
+{
+  "print": {
+    "sequence_id":             "20006",
+    "command":                 "project_file",
+    "param":                   "Metadata/plate_1.gcode",
+    "project_id":              "0",
+    "profile_id":              "0",
+    "task_id":                 "0",
+    "subtask_id":              "0",
+    "subtask_name":            "test",
+    "file":                    "test.gcode.3mf",
+    "url_enc":                 "bcXiq4/uHGqgb4DXVihrpQOR…",
+    "md5":                     "7947606528CE6E00219496B51D5D13D1",
+    "bed_type":                "textured_plate",
+    "bed_leveling":            false,
+    "flow_cali":               false,
+    "vibration_cali":          false,
+    "layer_inspect":           true,
+    "timelapse":               true,
+    "use_ams":                 true,
+    "ams_mapping":             [3,-1,-1],
+    "ams_mapping2":            [{"ams_id":0,"slot_id":3},{"ams_id":255,"slot_id":255},{"ams_id":255,"slot_id":255}],
+    "auto_bed_leveling":       0,
+    "cfg":                     "4",
+    "extrude_cali_flag":       0,
+    "extrude_cali_manual_mode":0,
+    "nozzle_offset_cali":      2
+  }
+}
+```
+
+| Field | Type | Source in `PrintParams` (Studio -> ABI) | Notes |
+|---|---|---|---|
+| `sequence_id` | string (decimal) | plugin-generated | Wall-clock millisecond counter; the printer echoes it on the matching ack. |
+| `command` | string | constant `"project_file"` | Selects the firmware handler. |
+| `param` | string | derived from `plate_index` | Always `Metadata/plate_<N>.gcode`; resolves to a path inside the uploaded 3mf. |
+| `project_id`, `profile_id`, `task_id`, `subtask_id` | strings | cloud task IDs from `POST /v1/user-service/my/task` (cloud) or `"0"` placeholder (LAN / Developer Mode) | Sent as **strings**, not numbers. |
+| `subtask_name` | string | `project_name` (falls back to `task_name`) | Shown on the printer screen. |
+| `file` | string | `opts.file_path` | Filename (LAN: full FTP path of the uploaded 3mf; cloud: object name in the presigned bucket). |
+| `url` / `url_enc` | string | `opts.url` | The printer needs to know where to fetch the 3mf from. Two mutually exclusive shapes: `url` is the cleartext source (`ftp://<path>` for LAN, presigned `https://…` for cloud); `url_enc` is the same URL encrypted with AES under a per-print key, the AES key in turn wrapped with RSA-OAEP against the printer's device certificate, and the result Base64-encoded. Stock-firmware printers outside Developer Mode require `url_enc`; Developer Mode disables that check and accepts plain `url`. |
+| `md5` | string | `opts.md5` (uppercase hex) | Printer cross-checks the 3mf integrity before slicing it. |
+| `bed_type` | string | `task_bed_type` (defaults to `"auto"`) | One of the `MachineBedTypeString` values. |
+| `bed_leveling`, `flow_cali`, `vibration_cali`, `layer_inspect`, `timelapse`, `use_ams` | bool | matching `task_*` flags | Per-print toggles from the `SelectMachineDialog` checkboxes. |
+| `ams_mapping` | int array | `ams_mapping` (Studio passes a JSON array string `[0,-1,...]`) | Index = filament slot in the 3mf, value = AMS tray id (`-1` = no mapping, `255` = virtual tray). Legacy single-AMS shape. |
+| `ams_mapping2` | object array | `ams_mapping2` (Studio passes a JSON-array string of `{ams_id, slot_id}` objects) | Newer multi-AMS schema, one entry per filament. `255/255` means "external spool / not via AMS". Required for printers with >1 AMS unit; firmware that supports both fields prefers `ams_mapping2` over `ams_mapping`. |
+| `auto_bed_leveling` | int | `auto_bed_leveling` | Bed-leveling option as an int (0 = off, 1 = on, 2 = auto). Coexists with the boolean `bed_leveling`: the boolean is the user toggle, the int is the resolved policy after taking firmware capabilities into account. |
+| `nozzle_offset_cali` | int | `auto_offset_cali` (**name mismatch is intentional in upstream**) | Nozzle-offset calibration option (0 = off, 2 = auto). |
+| `extrude_cali_manual_mode` | int | `extruder_cali_manual_mode` (**`extrude` vs `extruder` asymmetry is intentional in upstream**) | PA calibration mode (0 = automatic, 1 = manual). Stock plugin always emits the field; absent from older firmware paths. |
+| `cfg` | string (decimal int) | not present in `PrintParams` | Stock-plugin-only field, observed values constant per install (`"4"` in the captures). Not referenced anywhere in the BambuStudio source tree, presumably an internal capability bitmask the stock plugin reads from its config. |
+| `extrude_cali_flag` | int | not present in `PrintParams` | Stock-plugin-only field, observed value `0`. Likely a "PA cali already pending" guard derived from cached printer state; also not referenced in the public Studio source. |
+
+Sibling `header` object the stock plugin wraps the command in (cloud and LAN alike when paired against signature-checking firmware):
+
+```json
+{
+  "header": {
+    "cert_id":     "a4e8faaa…CN=GLOF3813734089.bambulab.com",
+    "payload_len": 1313,
+    "sign_alg":    "RSA_SHA256",
+    "sign_string": "ycWyeOUZFB…==",
+    "sign_ver":    "v1.0"
+  },
+  "print": { … }
+}
+```
+
+`cert_id` identifies the device certificate used for signing (its Subject DN includes `CN=<dev_id>.bambulab.com`); `payload_len` is the byte length of the serialized `print` object; `sign_string` is the Base64 RSA-SHA256 signature of that exact payload computed with the per-install private key shipped inside the stock plugin's obfuscated blob; `sign_ver` versions the canonicalization rules. Non-Developer-Mode firmware rejects unsigned `project_file` (and other privileged) commands with `MQTT Command verification failed` (error `84033543`). Developer Mode bypasses the check entirely (see "Developer Mode requirement" in `README.md`), making the `header` envelope optional.
+
+Other `PrintParams` members Studio populates but **does not put into the MQTT command** itself: `nozzle_mapping`, `nozzles_info`, `ams_mapping_info`, `extra_options`, `task_ext_change_assist`, `task_timelapse_use_internal`, `try_emmc_print`, `comments`. They feed the cloud-side `POST /v1/user-service/my/task` body and the timelapse-storage preflight (see below), not `project_file`.
+
+#### 6.8.3. Timelapse-storage preflight (`ipcam_get_media_info`)
+
+Right before `project_file` Studio runs a preflight against the printer's storage when the user enabled timelapse and the printer reports `is_support_internal_timelapse`. The check is **driven by Studio, not by the plugin**: `SelectMachineDialog::start_timelapse_storage_check()` -> `MachineObject::command_ipcam_check_timelapse_storage(storage, total_layer)` -> `MachineObject::publish_json()`, which routes through `bambu_network_send_message_to_printer` (LAN) or `bambu_network_send_message` (cloud) with this opaque payload:
+
+```json
+{
+  "camera": {
+    "command":     "ipcam_get_media_info",
+    "sub_command": "is_timelapse_storage_enough",
+    "sequence_id": "20021",
+    "storage":     "internal",
+    "total_layer": 50
+  }
+}
+```
+
+The printer answers on the same channel with `result`, `is_enough`, `file_count`; Studio reads them in `DeviceManager.cpp:3548-3553` and either proceeds with `on_send_print()` or shows the "free up storage" dialog. From the plugin's perspective the frame is opaque — it is neither parsed nor formatted plugin-side, only forwarded byte-for-byte by the generic `send_message*` ABI calls.
+
 ### 6.9. User presets
 
 | Symbol | Signature |

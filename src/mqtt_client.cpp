@@ -193,6 +193,15 @@ int Client::unsubscribe(const std::string& topic)
 int Client::publish(const std::string& topic, const std::string& payload, int qos, bool retain)
 {
     if (!mosq_) return MOSQ_ERR_INVAL;
+    // Symmetric to s_on_message: log every outgoing publish under TRACE.
+    // Lets `OBN_LOG_LEVEL=trace` capture both directions of the MQTT
+    // conversation in one log file, without rebuilding the plugin or
+    // standing up a real MITM. Stays cheap when TRACE is disabled
+    // because the macro short-circuits before formatting.
+    OBN_DEBUG("mqtt publish topic=%s bytes=%zu qos=%d retain=%d",
+              topic.c_str(), payload.size(), qos, retain ? 1 : 0);
+    OBN_TRACE("mqtt publish payload=%.*s",
+              static_cast<int>(payload.size()), payload.data());
     return ::mosquitto_publish(mosq_,
                                nullptr,
                                topic.c_str(),

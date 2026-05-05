@@ -334,6 +334,41 @@ std::string build_project_file_json(const BBL::PrintParams& p,
     os << ",\"timelapse\":"         << to_bool(p.task_record_timelapse);
     os << ",\"use_ams\":"           << to_bool(p.task_use_ams);
     os << ",\"ams_mapping\":"       << ams_mapping;
+
+    // Field name mapping (Studio C++ -> firmware JSON) is intentionally
+    // asymmetric in the upstream; preserved verbatim here so wireshark
+    // diffs against the stock plugin stay clean:
+    //   PrintParams::ams_mapping2              -> "ams_mapping2"
+    //   PrintParams::auto_bed_leveling         -> "auto_bed_leveling"
+    //   PrintParams::auto_offset_cali          -> "nozzle_offset_cali"
+    //   PrintParams::extruder_cali_manual_mode -> "extrude_cali_manual_mode"
+    if (!p.ams_mapping2.empty()) {
+        // Already a JSON array of {ams_id, slot_id} objects produced by
+        // SelectMachineDialog::get_ams_mapping_result; embed verbatim.
+        os << ",\"ams_mapping2\":" << p.ams_mapping2;
+    }
+    os << ",\"auto_bed_leveling\":"  << p.auto_bed_leveling;
+    os << ",\"nozzle_offset_cali\":" << p.auto_offset_cali;
+    // Studio leaves -1 when set_print_config() was never called (e.g.
+    // headless / SDK paths). Skip the field in that case rather than
+    // forwarding the sentinel; the firmware then keeps its default PA mode.
+    if (p.extruder_cali_manual_mode >= 0) {
+        os << ",\"extrude_cali_manual_mode\":" << p.extruder_cali_manual_mode;
+    }
+
+    // Stock-plugin-only fields. Not present in `PrintParams`, not referenced
+    // anywhere in the public BambuStudio source tree, presumably read by the
+    // stock plugin from its own config blob. The values below are the ones
+    // observed verbatim in every captured stock `project_file` frame so far
+    // (P2S, stock firmware, single install). If a future capture shows
+    // different values, switch these to a real source instead of constants:
+    //   - `cfg` looks like a printer-capability bitmask (string-encoded int).
+    //   - `extrude_cali_flag` is presumably a "PA cali pending" guard
+    //     derived from cached printer state.
+    // See NETWORK_PLUGIN.md §6.8.2 for the wire-format reference.
+    os << ",\"cfg\":\"4\"";
+    os << ",\"extrude_cali_flag\":0";
+
     os << "}}";
     return os.str();
 }
