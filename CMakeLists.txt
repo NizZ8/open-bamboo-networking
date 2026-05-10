@@ -699,7 +699,8 @@ if(OBN_BUILD_TESTS AND NOT WIN32)
     # parser that populates Entry::mtime -- a regression there causes
     # every file in Studio's storage tab to show up as 1970 (Bambu
     # firmware has no MLSD, so LIST is the only thing we have).
-    add_executable(ftps_parse_test tests/ftps_parse_test.cpp)
+    add_executable(ftps_parse_test tests/ftps_parse_test.cpp
+        src/os_compat.cpp)
     target_include_directories(ftps_parse_test PRIVATE include src)
     add_test(NAME ftps_parse COMMAND ftps_parse_test)
 

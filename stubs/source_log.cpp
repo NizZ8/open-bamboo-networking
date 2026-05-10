@@ -111,8 +111,8 @@ namespace {
 // mirror_log_fp itself) using GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS.
 // The plugin is installed to "<data_dir>\plugins\BambuSource.dll", so
 // we strip the trailing two path components to recover <data_dir> at
-// runtime — meaning the same DLL writes to %APPDATA%\BambuStudio\
-// when Studio loads it and to %APPDATA%\OrcaSlicer\ when Orca does.
+// runtime — meaning the same DLL writes to "%APPDATA%\BambuStudio\"
+// when Studio loads it and to "%APPDATA%\OrcaSlicer\" when Orca does.
 std::string this_dll_data_dir()
 {
     HMODULE h = nullptr;
